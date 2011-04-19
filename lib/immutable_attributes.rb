@@ -1,7 +1,7 @@
 begin
-  require 'activerecord'
-rescue LoadError
   require 'active_record'
+rescue LoadError
+  require 'activerecord'
 end
 
 module ImmutableErrors
@@ -11,55 +11,61 @@ end
 
 module ImmutableAttributes
   VERSION = "1.0.3"
-  def attr_immutable(*args)
-    args.each do |meth|
-      class_eval do
-        define_method("#{meth}=") do |value|
-          new_record? || read_attribute(meth).nil? ?
-            write_attribute(meth, value) :
-            raise(ActiveRecord::ImmutableAttributeError, "#{meth} is immutable!")
-        end
+
+  class Immutable < Set
+    # allow setting attribute as mutable within block
+    def make_mutable(*attr_names)
+      self.subtract(attr_names)
+      begin
+        yield
+      ensure
+        self.merge(attr_names)
       end
     end
   end
 
-  def validates_immutable(*attr_names)
-    config = { :on => :update, :if => lambda {|x| true}, :message => "can't be changed" }
-    config.update(attr_names.extract_options!)
+  module ClassMethods
 
-    @immutables = attr_names
+    def attr_immutable(*args)
+      args.each do |meth|
+        class_eval do
+          define_method("#{meth}=") do |value|
+            new_record? || read_attribute(meth).nil? ?
+              write_attribute(meth, value) :
+              raise(ActiveRecord::ImmutableAttributeError, "#{meth} is immutable!")
+          end
+        end
+      end
+    end
 
-    attr_names.each do |meth|
+    def validates_immutable(*attr_names)
+      config = { :on => :update, :if => lambda {|x| true}, :message => :immutable }
+      config.update(attr_names.extract_options!)
+
+      @immutables ||= Immutable.new
+      @immutables.merge(attr_names)
+
+      instance_eval do
+        protected
+        def immutables
+          @immutables
+        end
+      end
+
       class_eval do
-        define_method("original_#{meth}") do
-          instance_variable_get("@original_#{meth}")
+        def immutables
+          # each instance maintains it's own copy of the immutable set
+          @immutables ||= self.class.send(:immutables).dup
         end
       end
-    end
 
-    class_eval do
-      def self.immutables
-        @immutables
+      validates_each(attr_names, config) do |record, attr_name, value|
+        record.errors.add(attr_name, config[:message], :default => 'cannot be modified') if record.changed.include?(attr_name.to_s) && record.immutables.include?(attr_name)
       end
-
-      def after_initialize; end;
-
-      def setup_originals
-        self.class.immutables.each do |attr_name|
-          next unless attribute_names.include? attr_name
-          instance_variable_set("@original_#{attr_name}", send(attr_name.to_s))
-        end
-      end
-      
-      after_initialize :setup_originals
     end
 
-    validates_each(attr_names, config) do |record, attr_name, value|
-      next if record.send("original_#{attr_name.to_s}").nil?
-      record.errors.add(attr_name, config[:message]) if record.send("original_#{attr_name.to_s}") != record.send(attr_name.to_s)
-    end
   end
 end
 
 ActiveRecord.send :include, ImmutableErrors
-ActiveRecord::Base.extend ImmutableAttributes
+ActiveRecord::Base.extend ImmutableAttributes::ClassMethods
