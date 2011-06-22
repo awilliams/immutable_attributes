@@ -60,7 +60,7 @@ module ImmutableAttributes
       end
 
       validates_each(attr_names, config) do |record, attr_name, value|
-        record.errors.add(attr_name, config[:message], :default => 'cannot be modified') if record.changed.include?(attr_name.to_s) && record.immutables.include?(attr_name)
+        record.errors.add(attr_name, config[:message]) if record.changed.include?(attr_name.to_s) && record.immutables.include?(attr_name)
       end
     end
 
